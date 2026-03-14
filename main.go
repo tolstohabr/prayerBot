@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	tb "github.com/tucnak/telebot"
+	tb "gopkg.in/telebot.v3"
 )
 
 func main() {
@@ -30,33 +30,31 @@ func main() {
 		log.Fatal(err)
 	}
 
-	bot.Handle("/start", func(m *tb.Message) {
-
+	bot.Handle("/start", func(c tb.Context) error {
 		locBtn := tb.ReplyButton{
 			Text:     "Отправить геолокацию",
 			Location: true,
 		}
 
 		markup := &tb.ReplyMarkup{
-			ResizeReplyKeyboard: true,
+			ResizeKeyboard: true,
 			ReplyKeyboard: [][]tb.ReplyButton{
 				{locBtn},
 			},
 		}
 
-		if _, err := bot.Send(m.Sender, "Отправь геолоквцию:", markup); err != nil {
-			log.Println("Ошибка отправки сообщения:", err)
-		}
+		return c.Send("Отправь геолокацию:", markup)
 	})
 
-	bot.Handle(tb.OnLocation, func(m *tb.Message) {
+	bot.Handle(tb.OnLocation, func(c tb.Context) error {
 
-		if m.Location == nil {
-			return
+		loc := c.Message().Location
+		if loc == nil {
+			return nil
 		}
 
-		lat := m.Location.Lat
-		lon := m.Location.Lng
+		lat := loc.Lat
+		lon := loc.Lng
 
 		msg := fmt.Sprintf(
 			"Результат\n\nШирота: %.6f\nДолгота: %.6f",
@@ -64,9 +62,11 @@ func main() {
 			lon,
 		)
 
-		if _, err := bot.Send(m.Sender, msg); err != nil {
-			log.Println("Ошибка отправки сообщения:", err)
+		remove := &tb.ReplyMarkup{
+			RemoveKeyboard: true,
 		}
+
+		return c.Send(msg, remove)
 	})
 
 	bot.Start()
