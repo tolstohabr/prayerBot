@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -11,6 +13,38 @@ import (
 	"github.com/joho/godotenv"
 	tb "gopkg.in/telebot.v3"
 )
+
+type PrayerResponse struct {
+	Data struct {
+		Timings struct {
+			Fajr    string `json:"Fajr"`
+			Sunrise string `json:"Sunrise"`
+			Dhuhr   string `json:"Dhuhr"`
+			Asr     string `json:"Asr"`
+			Maghrib string `json:"Maghrib"`
+			Isha    string `json:"Isha"`
+		} `json:"timings"`
+	} `json:"data"`
+}
+
+func lastThirdOfNight(maghribStr, fajrStr string) string {
+
+	layout := "15:04"
+
+	maghrib, _ := time.Parse(layout, maghribStr)
+	fajr, _ := time.Parse(layout, fajrStr)
+
+	// если фаджр уже следующего дня
+	if fajr.Before(maghrib) {
+		fajr = fajr.Add(24 * time.Hour)
+	}
+
+	nightDuration := fajr.Sub(maghrib)
+
+	lastThirdStart := fajr.Add(-nightDuration / 3)
+
+	return lastThirdStart.Format(layout)
+}
 
 func main() {
 
@@ -49,6 +83,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	bot.SetCommands([]tb.Command{
+		{Text: "start", Description: "Запустить бота"},
+		{Text: "today", Description: "Расписание на сегодня"},
+		{Text: "madhab", Description: "Выбрать мазхаб"},
+	})
 
 	bot.Handle("/start", func(c tb.Context) error {
 		locBtn := tb.ReplyButton{
@@ -101,6 +141,122 @@ func main() {
 		}
 
 		return c.Send(msg, remove)
+	})
+
+	bot.Handle("/madhab", func(c tb.Context) error {
+
+		btnHanafi := tb.ReplyButton{Text: "Ханафи"}
+		btnShafi := tb.ReplyButton{Text: "Шафии"}
+
+		markup := &tb.ReplyMarkup{
+			ResizeKeyboard: true,
+			ReplyKeyboard: [][]tb.ReplyButton{
+				{btnHanafi, btnShafi},
+			},
+		}
+
+		return c.Send("Выберите мазхаб:", markup)
+	})
+
+	bot.Handle("Ханафи", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		_, err := conn.Exec(context.Background(),
+			`UPDATE users SET school = 1 WHERE chat_id=$1`,
+			chatID,
+		)
+
+		if err != nil {
+			log.Println(err)
+		}
+
+		remove := &tb.ReplyMarkup{
+			RemoveKeyboard: true,
+		}
+
+		return c.Send("Выбран ханафитский мазхаб", remove)
+	})
+
+	bot.Handle("Шафии", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		_, err := conn.Exec(context.Background(),
+			`UPDATE users SET school = 0 WHERE chat_id=$1`,
+			chatID,
+		)
+
+		if err != nil {
+			log.Println(err)
+		}
+
+		remove := &tb.ReplyMarkup{
+			RemoveKeyboard: true,
+		}
+
+		return c.Send("Выбран шафиитский мазхаб", remove)
+	})
+
+	bot.Handle("/today", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		var lat float64
+		var lon float64
+		var school int
+
+		err := conn.QueryRow(context.Background(),
+			`SELECT latitude, longitude, school FROM users WHERE chat_id=$1`,
+			chatID,
+		).Scan(&lat, &lon, &school)
+
+		if err != nil {
+			return c.Send("Сначала отправьте геолокацию через /start")
+		}
+
+		url := fmt.Sprintf(
+			"https://api.aladhan.com/v1/timings?latitude=%f&longitude=%f&method=3&school=%d",
+			lat, lon, school,
+		)
+
+		resp, err := http.Get(url)
+		if err != nil {
+			return c.Send("Ошибка получения данных намаза")
+		}
+		defer resp.Body.Close()
+
+		var prayer PrayerResponse
+
+		err = json.NewDecoder(resp.Body).Decode(&prayer)
+		if err != nil {
+			return c.Send("Ошибка обработки ответа API")
+		}
+
+		lastThird := lastThirdOfNight(
+			prayer.Data.Timings.Maghrib,
+			prayer.Data.Timings.Fajr,
+		)
+
+		msg := fmt.Sprintf(
+			"Расписание на сегодня:\n\n"+
+				"Фаджр: %s\n"+
+				"Восход: %s\n"+
+				"Зухр: %s\n"+
+				"Аср: %s\n"+
+				"Магриб: %s\n"+
+				"Иша: %s\n\n"+
+				"Последняя треть ночи: %s",
+			prayer.Data.Timings.Fajr,
+			prayer.Data.Timings.Sunrise,
+			prayer.Data.Timings.Dhuhr,
+			prayer.Data.Timings.Asr,
+			prayer.Data.Timings.Maghrib,
+			prayer.Data.Timings.Isha,
+			lastThird,
+		)
+
+		return c.Send(msg)
 	})
 
 	bot.Start()
