@@ -27,6 +27,15 @@ type PrayerResponse struct {
 	} `json:"data"`
 }
 
+var methods = map[string]int{
+	"Muslim World League (Мир)": 3,
+	"Umm Al-Qura (Аравия)":      4,
+	"Egyptian (Африка)":         5,
+	"Karachi (Азия)":            1,
+	"Diyanet (Турция, Европа)":  13,
+	"ISNA (Америка)":            2,
+}
+
 func lastThirdOfNight(maghribStr, fajrStr string) string {
 
 	layout := "15:04"
@@ -88,6 +97,7 @@ func main() {
 		{Text: "start", Description: "Запустить бота"},
 		{Text: "today", Description: "Расписание на сегодня"},
 		{Text: "madhab", Description: "Выбрать мазхаб"},
+		{Text: "method", Description: "Метод расчёта"},
 	})
 
 	bot.Handle("/start", func(c tb.Context) error {
@@ -198,6 +208,52 @@ func main() {
 		return c.Send("Выбран шафиитский мазхаб", remove)
 	})
 
+	bot.Handle("/method", func(c tb.Context) error {
+
+		btn1 := tb.ReplyButton{Text: "Muslim World League (Мир)"}
+		btn2 := tb.ReplyButton{Text: "Umm Al-Qura (Аравия)"}
+		btn3 := tb.ReplyButton{Text: "Egyptian (Африка)"}
+		btn4 := tb.ReplyButton{Text: "Karachi (Азия)"}
+		btn5 := tb.ReplyButton{Text: "Diyanet (Турция, Европа)"}
+		btn6 := tb.ReplyButton{Text: "ISNA (Америка)"}
+
+		markup := &tb.ReplyMarkup{
+			ResizeKeyboard: true,
+			ReplyKeyboard: [][]tb.ReplyButton{
+				{btn1, btn2},
+				{btn3, btn4},
+				{btn5, btn6},
+			},
+		}
+
+		return c.Send("Выберите организацию расчёта:", markup)
+	})
+
+	bot.Handle(tb.OnText, func(c tb.Context) error {
+
+		methodID, ok := methods[c.Text()]
+		if !ok {
+			return nil
+		}
+
+		chatID := c.Sender().ID
+
+		_, err := conn.Exec(context.Background(),
+			`UPDATE users SET method=$1 WHERE chat_id=$2`,
+			methodID, chatID,
+		)
+
+		if err != nil {
+			log.Println(err)
+		}
+
+		remove := &tb.ReplyMarkup{
+			RemoveKeyboard: true,
+		}
+
+		return c.Send("Метод расчёта обновлён", remove)
+	})
+
 	bot.Handle("/today", func(c tb.Context) error {
 
 		chatID := c.Sender().ID
@@ -205,19 +261,20 @@ func main() {
 		var lat float64
 		var lon float64
 		var school int
+		var method int
 
 		err := conn.QueryRow(context.Background(),
-			`SELECT latitude, longitude, school FROM users WHERE chat_id=$1`,
+			`SELECT latitude, longitude, school, method FROM users WHERE chat_id=$1`,
 			chatID,
-		).Scan(&lat, &lon, &school)
+		).Scan(&lat, &lon, &school, &method)
 
 		if err != nil {
 			return c.Send("Сначала отправьте геолокацию через /start")
 		}
 
 		url := fmt.Sprintf(
-			"https://api.aladhan.com/v1/timings?latitude=%f&longitude=%f&method=3&school=%d",
-			lat, lon, school,
+			"https://api.aladhan.com/v1/timings?latitude=%f&longitude=%f&method=%d&school=%d",
+			lat, lon, method, school,
 		)
 
 		resp, err := http.Get(url)
