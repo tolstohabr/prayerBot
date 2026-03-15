@@ -55,6 +55,42 @@ func lastThirdOfNight(maghribStr, fajrStr string) string {
 	return lastThirdStart.Format(layout)
 }
 
+func showMadhabMenu(c tb.Context) error {
+
+	btnHanafi := tb.ReplyButton{Text: "Ханафи"}
+	btnShafi := tb.ReplyButton{Text: "Шафии"}
+
+	markup := &tb.ReplyMarkup{
+		ResizeKeyboard: true,
+		ReplyKeyboard: [][]tb.ReplyButton{
+			{btnHanafi, btnShafi},
+		},
+	}
+
+	return c.Send("Выберите мазхаб:", markup)
+}
+
+func showMethodMenu(c tb.Context) error {
+
+	btn1 := tb.ReplyButton{Text: "Muslim World League (Мир)"}
+	btn2 := tb.ReplyButton{Text: "Umm Al-Qura (Аравия)"}
+	btn3 := tb.ReplyButton{Text: "Egyptian (Африка)"}
+	btn4 := tb.ReplyButton{Text: "Karachi (Азия)"}
+	btn5 := tb.ReplyButton{Text: "Diyanet (Турция, Европа)"}
+	btn6 := tb.ReplyButton{Text: "ISNA (Америка)"}
+
+	markup := &tb.ReplyMarkup{
+		ResizeKeyboard: true,
+		ReplyKeyboard: [][]tb.ReplyButton{
+			{btn1, btn2},
+			{btn3, btn4},
+			{btn5, btn6},
+		},
+	}
+
+	return c.Send("Выберите организацию расчёта:", markup)
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -96,8 +132,7 @@ func main() {
 	bot.SetCommands([]tb.Command{
 		{Text: "start", Description: "Запустить бота"},
 		{Text: "today", Description: "Расписание на сегодня"},
-		{Text: "madhab", Description: "Выбрать мазхаб"},
-		{Text: "method", Description: "Метод расчёта"},
+		{Text: "settings", Description: "Настройки"},
 	})
 
 	bot.Handle("/start", func(c tb.Context) error {
@@ -115,6 +150,47 @@ func main() {
 
 		return c.Send("Отправь геолокацию:", markup)
 	})
+
+	bot.Handle("/settings", func(c tb.Context) error {
+
+		btnMadhab := tb.ReplyButton{Text: "Мазхаб"}
+		btnMethod := tb.ReplyButton{Text: "Метод расчёта"}
+		btnLocation := tb.ReplyButton{Text: "Геолокация"}
+
+		markup := &tb.ReplyMarkup{
+			ResizeKeyboard: true,
+			ReplyKeyboard: [][]tb.ReplyButton{
+				{btnMadhab, btnMethod},
+				{btnLocation},
+			},
+		}
+
+		return c.Send("Настройки", markup)
+	})
+
+	bot.Handle("Мазхаб", showMadhabMenu)
+
+	bot.Handle("Метод расчёта", showMethodMenu)
+
+	bot.Handle("Геолокация", func(c tb.Context) error {
+
+		locBtn := tb.ReplyButton{
+			Text:     "Отправить геолокацию",
+			Location: true,
+		}
+
+		markup := &tb.ReplyMarkup{
+			ResizeKeyboard: true,
+			ReplyKeyboard: [][]tb.ReplyButton{
+				{locBtn},
+			},
+		}
+
+		return c.Send("Отправь новую геолокацию:", markup)
+	})
+
+	bot.Handle("/madhab", showMadhabMenu)
+	bot.Handle("/method", showMethodMenu)
 
 	bot.Handle(tb.OnLocation, func(c tb.Context) error {
 
@@ -151,21 +227,6 @@ func main() {
 		}
 
 		return c.Send(msg, remove)
-	})
-
-	bot.Handle("/madhab", func(c tb.Context) error {
-
-		btnHanafi := tb.ReplyButton{Text: "Ханафи"}
-		btnShafi := tb.ReplyButton{Text: "Шафии"}
-
-		markup := &tb.ReplyMarkup{
-			ResizeKeyboard: true,
-			ReplyKeyboard: [][]tb.ReplyButton{
-				{btnHanafi, btnShafi},
-			},
-		}
-
-		return c.Send("Выберите мазхаб:", markup)
 	})
 
 	bot.Handle("Ханафи", func(c tb.Context) error {
@@ -206,27 +267,6 @@ func main() {
 		}
 
 		return c.Send("Выбран шафиитский мазхаб", remove)
-	})
-
-	bot.Handle("/method", func(c tb.Context) error {
-
-		btn1 := tb.ReplyButton{Text: "Muslim World League (Мир)"}
-		btn2 := tb.ReplyButton{Text: "Umm Al-Qura (Аравия)"}
-		btn3 := tb.ReplyButton{Text: "Egyptian (Африка)"}
-		btn4 := tb.ReplyButton{Text: "Karachi (Азия)"}
-		btn5 := tb.ReplyButton{Text: "Diyanet (Турция, Европа)"}
-		btn6 := tb.ReplyButton{Text: "ISNA (Америка)"}
-
-		markup := &tb.ReplyMarkup{
-			ResizeKeyboard: true,
-			ReplyKeyboard: [][]tb.ReplyButton{
-				{btn1, btn2},
-				{btn3, btn4},
-				{btn5, btn6},
-			},
-		}
-
-		return c.Send("Выберите организацию расчёта:", markup)
 	})
 
 	bot.Handle(tb.OnText, func(c tb.Context) error {
