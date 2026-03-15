@@ -157,6 +157,7 @@ func main() {
 		btnMadhab := tb.ReplyButton{Text: "Мазхаб"}
 		btnMethod := tb.ReplyButton{Text: "Метод расчёта"}
 		btnLocation := tb.ReplyButton{Text: "Геолокация"}
+		btnSub := tb.ReplyButton{Text: "Подписка"}
 
 		markup := &tb.ReplyMarkup{
 			ResizeKeyboard: true,
@@ -164,6 +165,7 @@ func main() {
 				{btnProfile},
 				{btnMadhab, btnMethod},
 				{btnLocation},
+				{btnSub},
 			},
 		}
 
@@ -229,6 +231,55 @@ func main() {
 		}
 
 		return c.Send(msg, remove)
+	})
+
+	bot.Handle("Подписка", func(c tb.Context) error {
+
+		btnOn := tb.ReplyButton{Text: "Подписаться"}
+		btnOff := tb.ReplyButton{Text: "Отписаться"}
+
+		markup := &tb.ReplyMarkup{
+			ResizeKeyboard: true,
+			ReplyKeyboard: [][]tb.ReplyButton{
+				{btnOn, btnOff},
+			},
+		}
+
+		return c.Send("Управление уведомлениями", markup)
+	})
+
+	bot.Handle("Подписаться", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		_, err := conn.Exec(context.Background(),
+			`UPDATE users SET subscribed=true WHERE chat_id=$1`,
+			chatID,
+		)
+
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка подписки")
+		}
+
+		return c.Send("Вы подписались на уведомления о намазе")
+	})
+
+	bot.Handle("Отписаться", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		_, err := conn.Exec(context.Background(),
+			`UPDATE users SET subscribed=false WHERE chat_id=$1`,
+			chatID,
+		)
+
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка отписки")
+		}
+
+		return c.Send("Вы отписались от уведомлений")
 	})
 
 	bot.Handle("Профиль", func(c tb.Context) error {
