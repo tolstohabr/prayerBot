@@ -153,6 +153,7 @@ func main() {
 
 	bot.Handle("/settings", func(c tb.Context) error {
 
+		btnProfile := tb.ReplyButton{Text: "Профиль"}
 		btnMadhab := tb.ReplyButton{Text: "Мазхаб"}
 		btnMethod := tb.ReplyButton{Text: "Метод расчёта"}
 		btnLocation := tb.ReplyButton{Text: "Геолокация"}
@@ -160,6 +161,7 @@ func main() {
 		markup := &tb.ReplyMarkup{
 			ResizeKeyboard: true,
 			ReplyKeyboard: [][]tb.ReplyButton{
+				{btnProfile},
 				{btnMadhab, btnMethod},
 				{btnLocation},
 			},
@@ -205,11 +207,11 @@ func main() {
 		chatID := c.Sender().ID
 
 		_, err := conn.Exec(context.Background(),
-			`INSERT INTO users (chat_id, latitude, longitude, subscribed)
-		 VALUES ($1, $2, $3, FALSE)
-		 ON CONFLICT (chat_id) DO UPDATE
-		 SET latitude = EXCLUDED.latitude,
-		     longitude = EXCLUDED.longitude`,
+			`INSERT INTO users (chat_id, latitude, longitude, subscribed, method, school)
+	 VALUES ($1, $2, $3, FALSE, 3, 1)
+	 ON CONFLICT (chat_id) DO UPDATE
+	 SET latitude = EXCLUDED.latitude,
+	     longitude = EXCLUDED.longitude`,
 			chatID, lat, lon,
 		)
 		if err != nil {
@@ -227,6 +229,54 @@ func main() {
 		}
 
 		return c.Send(msg, remove)
+	})
+
+	bot.Handle("Профиль", func(c tb.Context) error {
+
+		chatID := c.Sender().ID
+
+		var school int
+		var method int
+		var subscribed bool
+
+		err := conn.QueryRow(context.Background(),
+			`SELECT school, method, subscribed FROM users WHERE chat_id=$1`,
+			chatID,
+		).Scan(&school, &method, &subscribed)
+
+		if err != nil {
+			return c.Send("Сначала отправьте геолокацию через /start")
+		}
+
+		madhab := "Шафии"
+		if school == 1 {
+			madhab = "Ханафи"
+		}
+
+		methodName := "Неизвестно"
+		for name, id := range methods {
+			if id == method {
+				methodName = name
+				break
+			}
+		}
+
+		subStatus := "Нет"
+		if subscribed {
+			subStatus = "Да"
+		}
+
+		msg := fmt.Sprintf(
+			"Профиль\n\n"+
+				"Мазхаб: %s\n"+
+				"Метод: %s\n"+
+				"Подписка: %s",
+			madhab,
+			methodName,
+			subStatus,
+		)
+
+		return c.Send(msg)
 	})
 
 	bot.Handle("Ханафи", func(c tb.Context) error {
