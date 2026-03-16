@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -89,6 +90,42 @@ func showMethodMenu(c tb.Context) error {
 	}
 
 	return c.Send("Выберите организацию расчёта:", markup)
+}
+
+func roundCoord(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func getOrCreateLocation(ctx context.Context, conn *pgx.Conn, lat, lon float64) (int, error) {
+
+	var id int
+
+	err := conn.QueryRow(ctx,
+		`INSERT INTO locations (lat, lon)
+		 VALUES ($1, $2)
+		 ON CONFLICT (lat, lon)
+		 DO UPDATE SET lat = EXCLUDED.lat
+		 RETURNING id`,
+		lat, lon,
+	).Scan(&id)
+
+	return id, err
+}
+
+func getOrCreateProfile(ctx context.Context, conn *pgx.Conn, locationID, method, school int) (int, error) {
+
+	var id int
+
+	err := conn.QueryRow(ctx,
+		`INSERT INTO prayer_profiles (location_id, method, school)
+		 VALUES ($1,$2,$3)
+		 ON CONFLICT (location_id,method,school)
+		 DO UPDATE SET method = EXCLUDED.method
+		 RETURNING id`,
+		locationID, method, school,
+	).Scan(&id)
+
+	return id, err
 }
 
 func main() {
@@ -203,25 +240,42 @@ func main() {
 			return nil
 		}
 
-		lat := loc.Lat
-		lon := loc.Lng
+		lat := roundCoord(float64(loc.Lat))
+		lon := roundCoord(float64(loc.Lng))
 
 		chatID := c.Sender().ID
 
-		_, err := conn.Exec(context.Background(),
-			`INSERT INTO users (chat_id, latitude, longitude, subscribed, method, school)
-	 VALUES ($1, $2, $3, FALSE, 3, 1)
-	 ON CONFLICT (chat_id) DO UPDATE
-	 SET latitude = EXCLUDED.latitude,
-	     longitude = EXCLUDED.longitude`,
-			chatID, lat, lon,
-		)
+		ctx := context.Background()
+
+		locationID, err := getOrCreateLocation(ctx, conn, lat, lon)
 		if err != nil {
-			log.Println("Ошибка при вставке в БД:", err)
+			log.Println(err)
+			return c.Send("Ошибка сохранения локации")
+		}
+
+		method := 3
+		school := 1
+
+		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка создания профиля")
+		}
+
+		_, err = conn.Exec(ctx,
+			`INSERT INTO users (chat_id, profile_id)
+		 VALUES ($1,$2)
+		 ON CONFLICT (chat_id)
+		 DO UPDATE SET profile_id = EXCLUDED.profile_id`,
+			chatID, profileID,
+		)
+
+		if err != nil {
+			log.Println(err)
 		}
 
 		msg := fmt.Sprintf(
-			"Результат\n\nШирота: %.6f\nДолгота: %.6f",
+			"Геолокация сохранена\n\nШирота: %.2f\nДолгота: %.2f",
 			lat,
 			lon,
 		)
@@ -291,7 +345,10 @@ func main() {
 		var subscribed bool
 
 		err := conn.QueryRow(context.Background(),
-			`SELECT school, method, subscribed FROM users WHERE chat_id=$1`,
+			`SELECT p.school, p.method, u.subscribed
+	 FROM users u
+	 JOIN prayer_profiles p ON u.profile_id = p.id
+	 WHERE u.chat_id=$1`,
 			chatID,
 		).Scan(&school, &method, &subscribed)
 
@@ -333,10 +390,34 @@ func main() {
 	bot.Handle("Ханафи", func(c tb.Context) error {
 
 		chatID := c.Sender().ID
+		ctx := context.Background()
 
-		_, err := conn.Exec(context.Background(),
-			`UPDATE users SET school = 1 WHERE chat_id=$1`,
+		var locationID int
+		var method int
+
+		err := conn.QueryRow(ctx,
+			`SELECT p.location_id, p.method
+		 FROM users u
+		 JOIN prayer_profiles p ON u.profile_id = p.id
+		 WHERE u.chat_id=$1`,
 			chatID,
+		).Scan(&locationID, &method)
+
+		if err != nil {
+			return c.Send("Сначала отправьте геолокацию")
+		}
+
+		school := 1
+
+		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка обновления мазхаба")
+		}
+
+		_, err = conn.Exec(ctx,
+			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
+			profileID, chatID,
 		)
 
 		if err != nil {
@@ -353,10 +434,34 @@ func main() {
 	bot.Handle("Шафии", func(c tb.Context) error {
 
 		chatID := c.Sender().ID
+		ctx := context.Background()
 
-		_, err := conn.Exec(context.Background(),
-			`UPDATE users SET school = 0 WHERE chat_id=$1`,
+		var locationID int
+		var method int
+
+		err := conn.QueryRow(ctx,
+			`SELECT p.location_id, p.method
+		 FROM users u
+		 JOIN prayer_profiles p ON u.profile_id = p.id
+		 WHERE u.chat_id=$1`,
 			chatID,
+		).Scan(&locationID, &method)
+
+		if err != nil {
+			return c.Send("Сначала отправьте геолокацию")
+		}
+
+		school := 0
+
+		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка обновления мазхаба")
+		}
+
+		_, err = conn.Exec(ctx,
+			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
+			profileID, chatID,
 		)
 
 		if err != nil {
@@ -378,10 +483,32 @@ func main() {
 		}
 
 		chatID := c.Sender().ID
+		ctx := context.Background()
 
-		_, err := conn.Exec(context.Background(),
-			`UPDATE users SET method=$1 WHERE chat_id=$2`,
-			methodID, chatID,
+		var locationID int
+		var school int
+
+		err := conn.QueryRow(ctx,
+			`SELECT p.location_id, p.school
+		 FROM users u
+		 JOIN prayer_profiles p ON u.profile_id = p.id
+		 WHERE u.chat_id=$1`,
+			chatID,
+		).Scan(&locationID, &school)
+
+		if err != nil {
+			return nil
+		}
+
+		profileID, err := getOrCreateProfile(ctx, conn, locationID, methodID, school)
+		if err != nil {
+			log.Println(err)
+			return c.Send("Ошибка обновления метода")
+		}
+
+		_, err = conn.Exec(ctx,
+			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
+			profileID, chatID,
 		)
 
 		if err != nil {
@@ -405,9 +532,13 @@ func main() {
 		var method int
 
 		err := conn.QueryRow(context.Background(),
-			`SELECT latitude, longitude, school, method FROM users WHERE chat_id=$1`,
+			`SELECT l.lat, l.lon, p.method, p.school
+	 FROM users u
+	 JOIN prayer_profiles p ON u.profile_id = p.id
+	 JOIN locations l ON p.location_id = l.id
+	 WHERE u.chat_id=$1`,
 			chatID,
-		).Scan(&lat, &lon, &school, &method)
+		).Scan(&lat, &lon, &method, &school)
 
 		if err != nil {
 			return c.Send("Сначала отправьте геолокацию через /start")
