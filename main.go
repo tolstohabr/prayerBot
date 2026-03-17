@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	tb "gopkg.in/telebot.v3"
 )
@@ -96,11 +96,11 @@ func roundCoord(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
-func getOrCreateLocation(ctx context.Context, conn *pgx.Conn, lat, lon float64) (int, error) {
+func getOrCreateLocation(ctx context.Context, pool *pgxpool.Pool, lat, lon float64) (int, error) {
 
 	var id int
 
-	err := conn.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`INSERT INTO locations (lat, lon)
 		 VALUES ($1, $2)
 		 ON CONFLICT (lat, lon)
@@ -112,11 +112,11 @@ func getOrCreateLocation(ctx context.Context, conn *pgx.Conn, lat, lon float64) 
 	return id, err
 }
 
-func getOrCreateProfile(ctx context.Context, conn *pgx.Conn, locationID, method, school int) (int, error) {
+func getOrCreateProfile(ctx context.Context, pool *pgxpool.Pool, locationID, method, school int) (int, error) {
 
 	var id int
 
-	err := conn.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`INSERT INTO prayer_profiles (location_id, method, school)
 		 VALUES ($1,$2,$3)
 		 ON CONFLICT (location_id,method,school)
@@ -128,9 +128,9 @@ func getOrCreateProfile(ctx context.Context, conn *pgx.Conn, locationID, method,
 	return id, err
 }
 
-func savePrayerTimes(ctx context.Context, conn *pgx.Conn, profileID int, date time.Time, t PrayerResponse) error {
+func savePrayerTimes(ctx context.Context, pool *pgxpool.Pool, profileID int, date time.Time, t PrayerResponse) error {
 
-	_, err := conn.Exec(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO prayer_times
 		(profile_id, date, fajr, sunrise, dhuhr, asr, maghrib, isha)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -148,11 +148,11 @@ func savePrayerTimes(ctx context.Context, conn *pgx.Conn, profileID int, date ti
 	return err
 }
 
-func getPrayerTimes(ctx context.Context, conn *pgx.Conn, profileID int, date time.Time) (PrayerResponse, bool) {
+func getPrayerTimes(ctx context.Context, pool *pgxpool.Pool, profileID int, date time.Time) (PrayerResponse, bool) {
 
 	var t PrayerResponse
 
-	err := conn.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`SELECT fajr, sunrise, dhuhr, asr, maghrib, isha
 		 FROM prayer_times
 		 WHERE profile_id=$1 AND date=$2`,
@@ -181,16 +181,14 @@ func formatTime(t string) string {
 	return t
 }
 
-func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
-	log.Println("=== CHECKING NOTIFICATIONS ===", time.Now())
-
+func sendPrayerNotifications(bot *tb.Bot, pool *pgxpool.Pool) {
 	ctx := context.Background()
 
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	currentTime := now.Format("15:04:05")
 
-	rows, err := conn.Query(ctx,
+	rows, err := pool.Query(ctx,
 		`SELECT id, profile_id,
 		        fajr, dhuhr, asr, maghrib, isha,
 		        fajr_notified, dhuhr_notified, asr_notified,
@@ -199,7 +197,6 @@ func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
 		 WHERE date=$1`,
 		today,
 	)
-	log.Println("Query prayer_times OK")
 	if err != nil {
 		log.Println("Ошибка запроса prayer_times:", err)
 		return
@@ -223,39 +220,26 @@ func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
 			continue
 		}
 
-		log.Println("ROW:",
-			"id=", id,
-			"profile=", profileID,
-			"fajr=", fajr,
-			"fajr_notified=", fajrN,
-		)
-		log.Println("ROW:",
-			"id=", id,
-			"profile=", profileID,
-			"asr=", asr,
-			"asr_notified=", asrN,
-		)
-
-		checkAndSend(bot, conn, profileID, "Фаджр", fajr, fajrN, currentTime,
+		checkAndSend(bot, pool, profileID, "Фаджр", fajr, fajrN, currentTime,
 			`UPDATE prayer_times SET fajr_notified=true WHERE id=$1`, id)
 
-		checkAndSend(bot, conn, profileID, "Зухр", dhuhr, dhuhrN, currentTime,
+		checkAndSend(bot, pool, profileID, "Зухр", dhuhr, dhuhrN, currentTime,
 			`UPDATE prayer_times SET dhuhr_notified=true WHERE id=$1`, id)
 
-		checkAndSend(bot, conn, profileID, "Аср", asr, asrN, currentTime,
+		checkAndSend(bot, pool, profileID, "Аср", asr, asrN, currentTime,
 			`UPDATE prayer_times SET asr_notified=true WHERE id=$1`, id)
 
-		checkAndSend(bot, conn, profileID, "Магриб", maghrib, maghribN, currentTime,
+		checkAndSend(bot, pool, profileID, "Магриб", maghrib, maghribN, currentTime,
 			`UPDATE prayer_times SET maghrib_notified=true WHERE id=$1`, id)
 
-		checkAndSend(bot, conn, profileID, "Иша", isha, ishaN, currentTime,
+		checkAndSend(bot, pool, profileID, "Иша", isha, ishaN, currentTime,
 			`UPDATE prayer_times SET isha_notified=true WHERE id=$1`, id)
 	}
 }
 
 func checkAndSend(
 	bot *tb.Bot,
-	conn *pgx.Conn,
+	pool *pgxpool.Pool,
 	profileID int,
 	name string,
 	prayerTime string,
@@ -264,15 +248,8 @@ func checkAndSend(
 	updateQuery string,
 	rowID int,
 ) {
-	log.Println("CHECK:",
-		name,
-		"time=", prayerTime,
-		"now=", now,
-		"notified=", notified,
-	)
 
 	if notified {
-		log.Println("SKIP: already notified")
 		return
 	}
 
@@ -280,34 +257,41 @@ func checkAndSend(
 		prayerTime = prayerTime[:8]
 	}
 
-	if prayerTime > now {
-		log.Println("SKIP: time not reached")
+	parsedPrayer, err := time.Parse("15:04:05", prayerTime)
+	if err != nil {
+		log.Println("parse prayer error:", err)
+		return
+	}
+
+	parsedNow, err := time.Parse("15:04:05", now)
+	if err != nil {
+		log.Println("parse now error:", err)
+		return
+	}
+
+	diff := parsedNow.Sub(parsedPrayer)
+
+	if diff < 0 || diff > time.Minute {
 		return
 	}
 
 	ctx := context.Background()
 
-	rows, err := conn.Query(ctx,
+	rows, err := pool.Query(ctx,
 		`SELECT chat_id FROM users
 		 WHERE profile_id=$1 AND subscribed=true`,
 		profileID,
 	)
-	log.Println("Fetching users for profile:", profileID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	count := 0
-
 	for rows.Next() {
-		count++
 		var chatID int64
 		if err := rows.Scan(&chatID); err != nil {
 			continue
 		}
-
-		log.Println("SEND TO:", chatID)
 
 		_, err := bot.Send(&tb.User{ID: chatID},
 			fmt.Sprintf("Время намаза: %s", name))
@@ -316,14 +300,10 @@ func checkAndSend(
 		}
 	}
 
-	log.Println("USERS FOUND:", count)
-
-	_, err = conn.Exec(ctx, updateQuery, rowID)
+	_, err = pool.Exec(ctx, updateQuery, rowID)
 	if err != nil {
 		log.Println("Ошибка обновления notified:", err)
 	}
-
-	log.Println("SENT:", name)
 }
 
 func main() {
@@ -347,14 +327,13 @@ func main() {
 		os.Getenv("DB_NAME"),
 	)
 
-	conn, err := pgx.Connect(context.Background(), connStr)
+	pool, err := pgxpool.New(context.Background(), connStr)
 	if err != nil {
 		log.Fatal("Ошибка подключения к базе:", err)
 	}
-
 	log.Println("Подключение к базе успешно")
 
-	defer conn.Close(context.Background())
+	defer pool.Close()
 
 	bot, err := tb.NewBot(tb.Settings{
 		Token:  botToken,
@@ -445,7 +424,7 @@ func main() {
 
 		ctx := context.Background()
 
-		locationID, err := getOrCreateLocation(ctx, conn, lat, lon)
+		locationID, err := getOrCreateLocation(ctx, pool, lat, lon)
 		if err != nil {
 			log.Println(err)
 			return c.Send("Ошибка сохранения локации")
@@ -454,13 +433,13 @@ func main() {
 		method := 3
 		school := 1
 
-		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		profileID, err := getOrCreateProfile(ctx, pool, locationID, method, school)
 		if err != nil {
 			log.Println(err)
 			return c.Send("Ошибка создания профиля")
 		}
 
-		_, err = conn.Exec(ctx,
+		_, err = pool.Exec(ctx,
 			`INSERT INTO users (chat_id, profile_id)
 		 VALUES ($1,$2)
 		 ON CONFLICT (chat_id)
@@ -504,7 +483,7 @@ func main() {
 
 		chatID := c.Sender().ID
 
-		_, err := conn.Exec(context.Background(),
+		_, err := pool.Exec(context.Background(),
 			`UPDATE users SET subscribed=true WHERE chat_id=$1`,
 			chatID,
 		)
@@ -521,7 +500,7 @@ func main() {
 
 		chatID := c.Sender().ID
 
-		_, err := conn.Exec(context.Background(),
+		_, err := pool.Exec(context.Background(),
 			`UPDATE users SET subscribed=false WHERE chat_id=$1`,
 			chatID,
 		)
@@ -542,7 +521,7 @@ func main() {
 		var method int
 		var subscribed bool
 
-		err := conn.QueryRow(context.Background(),
+		err := pool.QueryRow(context.Background(),
 			`SELECT p.school, p.method, u.subscribed
 	 FROM users u
 	 JOIN prayer_profiles p ON u.profile_id = p.id
@@ -593,7 +572,7 @@ func main() {
 		var locationID int
 		var method int
 
-		err := conn.QueryRow(ctx,
+		err := pool.QueryRow(ctx,
 			`SELECT p.location_id, p.method
 		 FROM users u
 		 JOIN prayer_profiles p ON u.profile_id = p.id
@@ -607,13 +586,13 @@ func main() {
 
 		school := 1
 
-		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		profileID, err := getOrCreateProfile(ctx, pool, locationID, method, school)
 		if err != nil {
 			log.Println(err)
 			return c.Send("Ошибка обновления мазхаба")
 		}
 
-		_, err = conn.Exec(ctx,
+		_, err = pool.Exec(ctx,
 			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
 			profileID, chatID,
 		)
@@ -637,7 +616,7 @@ func main() {
 		var locationID int
 		var method int
 
-		err := conn.QueryRow(ctx,
+		err := pool.QueryRow(ctx,
 			`SELECT p.location_id, p.method
 		 FROM users u
 		 JOIN prayer_profiles p ON u.profile_id = p.id
@@ -651,13 +630,13 @@ func main() {
 
 		school := 0
 
-		profileID, err := getOrCreateProfile(ctx, conn, locationID, method, school)
+		profileID, err := getOrCreateProfile(ctx, pool, locationID, method, school)
 		if err != nil {
 			log.Println(err)
 			return c.Send("Ошибка обновления мазхаба")
 		}
 
-		_, err = conn.Exec(ctx,
+		_, err = pool.Exec(ctx,
 			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
 			profileID, chatID,
 		)
@@ -686,7 +665,7 @@ func main() {
 		var locationID int
 		var school int
 
-		err := conn.QueryRow(ctx,
+		err := pool.QueryRow(ctx,
 			`SELECT p.location_id, p.school
 		 FROM users u
 		 JOIN prayer_profiles p ON u.profile_id = p.id
@@ -698,13 +677,13 @@ func main() {
 			return nil
 		}
 
-		profileID, err := getOrCreateProfile(ctx, conn, locationID, methodID, school)
+		profileID, err := getOrCreateProfile(ctx, pool, locationID, methodID, school)
 		if err != nil {
 			log.Println(err)
 			return c.Send("Ошибка обновления метода")
 		}
 
-		_, err = conn.Exec(ctx,
+		_, err = pool.Exec(ctx,
 			`UPDATE users SET profile_id=$1 WHERE chat_id=$2`,
 			profileID, chatID,
 		)
@@ -731,7 +710,7 @@ func main() {
 		var method int
 		var school int
 
-		err := conn.QueryRow(ctx,
+		err := pool.QueryRow(ctx,
 			`SELECT u.profile_id, l.lat, l.lon, p.method, p.school
 		 FROM users u
 		 JOIN prayer_profiles p ON u.profile_id = p.id
@@ -746,7 +725,7 @@ func main() {
 
 		today := time.Now()
 
-		prayer, found := getPrayerTimes(ctx, conn, profileID, today)
+		prayer, found := getPrayerTimes(ctx, pool, profileID, today)
 
 		if !found {
 
@@ -767,7 +746,7 @@ func main() {
 			}
 
 			// сохраняем в базу
-			err = savePrayerTimes(ctx, conn, profileID, today, prayer)
+			err = savePrayerTimes(ctx, pool, profileID, today, prayer)
 			if err != nil {
 				log.Println("Ошибка сохранения:", err)
 			}
@@ -801,7 +780,7 @@ func main() {
 
 	go func() {
 		for {
-			sendPrayerNotifications(bot, conn)
+			sendPrayerNotifications(bot, pool)
 			time.Sleep(30 * time.Second)
 		}
 	}()
