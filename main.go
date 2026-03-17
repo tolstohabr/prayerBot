@@ -745,7 +745,6 @@ func main() {
 				return c.Send("Ошибка обработки ответа API")
 			}
 
-			// сохраняем в базу
 			err = savePrayerTimes(ctx, pool, profileID, today, prayer)
 			if err != nil {
 				log.Println("Ошибка сохранения:", err)
