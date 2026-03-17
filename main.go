@@ -182,6 +182,7 @@ func formatTime(t string) string {
 }
 
 func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
+	log.Println("=== CHECKING NOTIFICATIONS ===", time.Now())
 
 	ctx := context.Background()
 
@@ -198,6 +199,7 @@ func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
 		 WHERE date=$1`,
 		today,
 	)
+	log.Println("Query prayer_times OK")
 	if err != nil {
 		log.Println("Ошибка запроса prayer_times:", err)
 		return
@@ -220,6 +222,19 @@ func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
 		if err != nil {
 			continue
 		}
+
+		log.Println("ROW:",
+			"id=", id,
+			"profile=", profileID,
+			"fajr=", fajr,
+			"fajr_notified=", fajrN,
+		)
+		log.Println("ROW:",
+			"id=", id,
+			"profile=", profileID,
+			"asr=", asr,
+			"asr_notified=", asrN,
+		)
 
 		checkAndSend(bot, conn, profileID, "Фаджр", fajr, fajrN, currentTime,
 			`UPDATE prayer_times SET fajr_notified=true WHERE id=$1`, id)
@@ -249,8 +264,15 @@ func checkAndSend(
 	updateQuery string,
 	rowID int,
 ) {
+	log.Println("CHECK:",
+		name,
+		"time=", prayerTime,
+		"now=", now,
+		"notified=", notified,
+	)
 
 	if notified {
+		log.Println("SKIP: already notified")
 		return
 	}
 
@@ -259,6 +281,7 @@ func checkAndSend(
 	}
 
 	if prayerTime > now {
+		log.Println("SKIP: time not reached")
 		return
 	}
 
@@ -269,16 +292,22 @@ func checkAndSend(
 		 WHERE profile_id=$1 AND subscribed=true`,
 		profileID,
 	)
+	log.Println("Fetching users for profile:", profileID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
+	count := 0
+
 	for rows.Next() {
+		count++
 		var chatID int64
 		if err := rows.Scan(&chatID); err != nil {
 			continue
 		}
+
+		log.Println("SEND TO:", chatID)
 
 		_, err := bot.Send(&tb.User{ID: chatID},
 			fmt.Sprintf("Время намаза: %s", name))
@@ -287,10 +316,14 @@ func checkAndSend(
 		}
 	}
 
+	log.Println("USERS FOUND:", count)
+
 	_, err = conn.Exec(ctx, updateQuery, rowID)
 	if err != nil {
 		log.Println("Ошибка обновления notified:", err)
 	}
+
+	log.Println("SENT:", name)
 }
 
 func main() {
