@@ -128,6 +128,59 @@ func getOrCreateProfile(ctx context.Context, conn *pgx.Conn, locationID, method,
 	return id, err
 }
 
+func savePrayerTimes(ctx context.Context, conn *pgx.Conn, profileID int, date time.Time, t PrayerResponse) error {
+
+	_, err := conn.Exec(ctx,
+		`INSERT INTO prayer_times
+		(profile_id, date, fajr, sunrise, dhuhr, asr, maghrib, isha)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (profile_id, date) DO NOTHING`,
+		profileID,
+		date.Format("2006-01-02"),
+		t.Data.Timings.Fajr,
+		t.Data.Timings.Sunrise,
+		t.Data.Timings.Dhuhr,
+		t.Data.Timings.Asr,
+		t.Data.Timings.Maghrib,
+		t.Data.Timings.Isha,
+	)
+
+	return err
+}
+
+func getPrayerTimes(ctx context.Context, conn *pgx.Conn, profileID int, date time.Time) (PrayerResponse, bool) {
+
+	var t PrayerResponse
+
+	err := conn.QueryRow(ctx,
+		`SELECT fajr, sunrise, dhuhr, asr, maghrib, isha
+		 FROM prayer_times
+		 WHERE profile_id=$1 AND date=$2`,
+		profileID,
+		date.Format("2006-01-02"),
+	).Scan(
+		&t.Data.Timings.Fajr,
+		&t.Data.Timings.Sunrise,
+		&t.Data.Timings.Dhuhr,
+		&t.Data.Timings.Asr,
+		&t.Data.Timings.Maghrib,
+		&t.Data.Timings.Isha,
+	)
+
+	if err != nil {
+		return t, false
+	}
+
+	return t, true
+}
+
+func formatTime(t string) string {
+	if len(t) >= 5 {
+		return t[:5]
+	}
+	return t
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -525,41 +578,54 @@ func main() {
 	bot.Handle("/today", func(c tb.Context) error {
 
 		chatID := c.Sender().ID
+		ctx := context.Background()
 
+		var profileID int
 		var lat float64
 		var lon float64
-		var school int
 		var method int
+		var school int
 
-		err := conn.QueryRow(context.Background(),
-			`SELECT l.lat, l.lon, p.method, p.school
-	 FROM users u
-	 JOIN prayer_profiles p ON u.profile_id = p.id
-	 JOIN locations l ON p.location_id = l.id
-	 WHERE u.chat_id=$1`,
+		err := conn.QueryRow(ctx,
+			`SELECT u.profile_id, l.lat, l.lon, p.method, p.school
+		 FROM users u
+		 JOIN prayer_profiles p ON u.profile_id = p.id
+		 JOIN locations l ON p.location_id = l.id
+		 WHERE u.chat_id=$1`,
 			chatID,
-		).Scan(&lat, &lon, &method, &school)
+		).Scan(&profileID, &lat, &lon, &method, &school)
 
 		if err != nil {
 			return c.Send("Сначала отправьте геолокацию через /start")
 		}
 
-		url := fmt.Sprintf(
-			"https://api.aladhan.com/v1/timings?latitude=%f&longitude=%f&method=%d&school=%d",
-			lat, lon, method, school,
-		)
+		today := time.Now()
 
-		resp, err := http.Get(url)
-		if err != nil {
-			return c.Send("Ошибка получения данных намаза")
-		}
-		defer resp.Body.Close()
+		prayer, found := getPrayerTimes(ctx, conn, profileID, today)
 
-		var prayer PrayerResponse
+		if !found {
 
-		err = json.NewDecoder(resp.Body).Decode(&prayer)
-		if err != nil {
-			return c.Send("Ошибка обработки ответа API")
+			url := fmt.Sprintf(
+				"https://api.aladhan.com/v1/timings?latitude=%f&longitude=%f&method=%d&school=%d",
+				lat, lon, method, school,
+			)
+
+			resp, err := http.Get(url)
+			if err != nil {
+				return c.Send("Ошибка получения данных намаза")
+			}
+			defer resp.Body.Close()
+
+			err = json.NewDecoder(resp.Body).Decode(&prayer)
+			if err != nil {
+				return c.Send("Ошибка обработки ответа API")
+			}
+
+			// сохраняем в базу
+			err = savePrayerTimes(ctx, conn, profileID, today, prayer)
+			if err != nil {
+				log.Println("Ошибка сохранения:", err)
+			}
 		}
 
 		lastThird := lastThirdOfNight(
@@ -576,12 +642,12 @@ func main() {
 				"Магриб: %s\n"+
 				"Иша: %s\n\n"+
 				"Последняя треть ночи: %s",
-			prayer.Data.Timings.Fajr,
-			prayer.Data.Timings.Sunrise,
-			prayer.Data.Timings.Dhuhr,
-			prayer.Data.Timings.Asr,
-			prayer.Data.Timings.Maghrib,
-			prayer.Data.Timings.Isha,
+			formatTime(prayer.Data.Timings.Fajr),
+			formatTime(prayer.Data.Timings.Sunrise),
+			formatTime(prayer.Data.Timings.Dhuhr),
+			formatTime(prayer.Data.Timings.Asr),
+			formatTime(prayer.Data.Timings.Maghrib),
+			formatTime(prayer.Data.Timings.Isha),
 			lastThird,
 		)
 
