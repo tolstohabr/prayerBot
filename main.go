@@ -181,6 +181,118 @@ func formatTime(t string) string {
 	return t
 }
 
+func sendPrayerNotifications(bot *tb.Bot, conn *pgx.Conn) {
+
+	ctx := context.Background()
+
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	currentTime := now.Format("15:04:05")
+
+	rows, err := conn.Query(ctx,
+		`SELECT id, profile_id,
+		        fajr, dhuhr, asr, maghrib, isha,
+		        fajr_notified, dhuhr_notified, asr_notified,
+		        maghrib_notified, isha_notified
+		 FROM prayer_times
+		 WHERE date=$1`,
+		today,
+	)
+	if err != nil {
+		log.Println("Ошибка запроса prayer_times:", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+
+		var id int
+		var profileID int
+
+		var fajr, dhuhr, asr, maghrib, isha string
+		var fajrN, dhuhrN, asrN, maghribN, ishaN bool
+
+		err := rows.Scan(
+			&id, &profileID,
+			&fajr, &dhuhr, &asr, &maghrib, &isha,
+			&fajrN, &dhuhrN, &asrN, &maghribN, &ishaN,
+		)
+		if err != nil {
+			continue
+		}
+
+		checkAndSend(bot, conn, profileID, "Фаджр", fajr, fajrN, currentTime,
+			`UPDATE prayer_times SET fajr_notified=true WHERE id=$1`, id)
+
+		checkAndSend(bot, conn, profileID, "Зухр", dhuhr, dhuhrN, currentTime,
+			`UPDATE prayer_times SET dhuhr_notified=true WHERE id=$1`, id)
+
+		checkAndSend(bot, conn, profileID, "Аср", asr, asrN, currentTime,
+			`UPDATE prayer_times SET asr_notified=true WHERE id=$1`, id)
+
+		checkAndSend(bot, conn, profileID, "Магриб", maghrib, maghribN, currentTime,
+			`UPDATE prayer_times SET maghrib_notified=true WHERE id=$1`, id)
+
+		checkAndSend(bot, conn, profileID, "Иша", isha, ishaN, currentTime,
+			`UPDATE prayer_times SET isha_notified=true WHERE id=$1`, id)
+	}
+}
+
+func checkAndSend(
+	bot *tb.Bot,
+	conn *pgx.Conn,
+	profileID int,
+	name string,
+	prayerTime string,
+	notified bool,
+	now string,
+	updateQuery string,
+	rowID int,
+) {
+
+	if notified {
+		return
+	}
+
+	if len(prayerTime) > 8 {
+		prayerTime = prayerTime[:8]
+	}
+
+	if prayerTime > now {
+		return
+	}
+
+	ctx := context.Background()
+
+	rows, err := conn.Query(ctx,
+		`SELECT chat_id FROM users
+		 WHERE profile_id=$1 AND subscribed=true`,
+		profileID,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var chatID int64
+		if err := rows.Scan(&chatID); err != nil {
+			continue
+		}
+
+		_, err := bot.Send(&tb.User{ID: chatID},
+			fmt.Sprintf("Время намаза: %s", name))
+		if err != nil {
+			log.Println("Ошибка отправки:", err)
+		}
+	}
+
+	_, err = conn.Exec(ctx, updateQuery, rowID)
+	if err != nil {
+		log.Println("Ошибка обновления notified:", err)
+	}
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -653,6 +765,13 @@ func main() {
 
 		return c.Send(msg)
 	})
+
+	go func() {
+		for {
+			sendPrayerNotifications(bot, conn)
+			time.Sleep(30 * time.Second)
+		}
+	}()
 
 	bot.Start()
 }
