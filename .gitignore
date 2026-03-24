@@ -1,3 +1,5 @@
 .env
 .idea
 TODO.md
+go.mod
+go.sum
